@@ -191,7 +191,6 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
     int ret;
     int count = 0;
     glob_t globbuf;
-    struct stat st;
 
     flb_plg_debug(ctx->ins, "scanning path %s", path);
 
@@ -209,18 +208,11 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
             flb_plg_error(ctx->ins, "read error, check permissions: %s", path);
             return -1;
         case GLOB_NOMATCH:
-            ret = stat(path, &st);
-            if (ret == -1) {
-                flb_plg_debug(ctx->ins, "cannot read info from: %s", path);
-            }
-            else {
-                ret = access(path, R_OK);
-                if (ret == -1 && errno == EACCES) {
-                    flb_plg_error(ctx->ins, "NO read access for path: %s", path);
-                }
-                else {
-                    flb_plg_debug(ctx->ins, "NO matches for path: %s", path);
-                }
+            ret = access(path, R_OK);
+            if (ret == -1 && errno == EACCES) {
+                flb_plg_error(ctx->ins, "NO read access for path: %s", path);
+            } else {
+                flb_plg_debug(ctx->ins, "NO matches for path: %s", path);
             }
             return 0;
         }
@@ -228,30 +220,22 @@ static int tail_scan_path(const char *path, struct flb_tail_config *ctx)
 
     /* For every entry found, generate an output list */
     for (i = 0; i < globbuf.gl_pathc; i++) {
-        ret = stat(globbuf.gl_pathv[i], &st);
-        if (ret == 0 && S_ISREG(st.st_mode)) {
-            /* Check if this file is blacklisted */
-            if (tail_is_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
-                flb_plg_debug(ctx->ins, "excluded=%s", globbuf.gl_pathv[i]);
-                continue;
-            }
-
-            /* Append file to list */
-            ret = flb_tail_file_append(globbuf.gl_pathv[i], &st,
-                                       FLB_TAIL_STATIC, ctx);
-            if (ret == 0) {
-                flb_plg_debug(ctx->ins, "scan_glob add(): %s, inode %li",
-                              globbuf.gl_pathv[i], st.st_ino);
-                count++;
-            }
-            else {
-                flb_plg_debug(ctx->ins, "scan_blog add(): dismissed: %s, inode %li",
-                              globbuf.gl_pathv[i], st.st_ino);
-            }
+        /* Check if this file is blacklisted */
+        if (tail_is_excluded(globbuf.gl_pathv[i], ctx) == FLB_TRUE) {
+            flb_plg_debug(ctx->ins, "excluded=%s", globbuf.gl_pathv[i]);
+            continue;
         }
-        else {
-            flb_plg_debug(ctx->ins, "skip (invalid) entry=%s",
-                          globbuf.gl_pathv[i]);
+
+        /* Append file to list */
+        ret = flb_tail_file_append(globbuf.gl_pathv[i],
+                                   FLB_TAIL_STATIC, ctx);
+        if (ret == 0) {
+            flb_plg_debug(ctx->ins, "scan_glob add(): %s, inode %li",
+                          globbuf.gl_pathv[i], st.st_ino);
+            count++;
+        } else {
+            flb_plg_debug(ctx->ins, "scan_blog add(): dismissed: %s, inode %li",
+                          globbuf.gl_pathv[i], st.st_ino);
         }
     }
 

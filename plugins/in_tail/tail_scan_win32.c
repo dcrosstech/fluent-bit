@@ -62,15 +62,10 @@ static int tail_is_excluded(char *path, struct flb_tail_config *ctx)
  */
 static int tail_register_file(const char *target, struct flb_tail_config *ctx)
 {
-    struct stat st;
     char path[MAX_PATH];
 
     if (_fullpath(path, target, MAX_PATH) == NULL) {
         flb_plg_error(ctx->ins, "cannot get absolute path of %s", target);
-        return -1;
-    }
-
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
         return -1;
     }
 
@@ -79,7 +74,7 @@ static int tail_register_file(const char *target, struct flb_tail_config *ctx)
         return -1;
     }
 
-    return flb_tail_file_append(path, &st, FLB_TAIL_STATIC, ctx);
+    return flb_tail_file_append(path, FLB_TAIL_STATIC, ctx);
 }
 
 /*

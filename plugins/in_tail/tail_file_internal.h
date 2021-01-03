@@ -38,10 +38,9 @@ struct flb_tail_file {
     int64_t offset;
     int64_t last_line;
     uint64_t  inode;
-    uint64_t  link_inode;
-    int   is_link;
+    uint64_t  dev;
     char *name;                 /* target file name given by scan routine */
-    char *real_name;            /* real file name in the file system */
+    char *filesystem;
     size_t name_len;
     time_t rotated;
     int64_t pending_bytes;

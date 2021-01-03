@@ -32,17 +32,21 @@
     "CREATE TABLE IF NOT EXISTS in_tail_files ("                        \
     "  id      INTEGER PRIMARY KEY,"                                    \
     "  name    TEXT NOT NULL,"                                          \
+    "  filesystem TEXT NOT NULL,"					\
     "  offset  INTEGER,"                                                \
     "  inode   INTEGER,"                                                \
     "  created INTEGER,"                                                \
     "  rotated INTEGER DEFAULT 0"                                       \
     ");"
 
-#define SQL_GET_FILE "SELECT * from in_tail_files WHERE inode=@inode;"
+#define SQL_CREATE_FILES_INDEX \
+    "CREATE UNIQUE INDEX IF NOT EXISTS in_tail_files_inode_fs_uidx ON in_tail_files(inode,filesystem);"
+
+#define SQL_GET_FILE "SELECT * from in_tail_files WHERE inode=@inode AND filesystem=@filesystem;"
 
 #define SQL_INSERT_FILE                                             \
-    "INSERT INTO in_tail_files (name, offset, inode, created)"      \
-    "  VALUES (@name, @offset, @inode, @created);"
+    "INSERT INTO in_tail_files (name, offset, inode, filesystem, created)"      \
+    "  VALUES (@name, @offset, @inode, @filesystem, @created);"
 
 #define SQL_ROTATE_FILE                                                 \
     "UPDATE in_tail_files set name=@name,rotated=1 WHERE id=@id;"

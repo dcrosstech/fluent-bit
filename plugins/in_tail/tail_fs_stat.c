@@ -70,8 +70,7 @@ static int tail_fs_event(struct flb_input_instance *ins,
         }
 
         /* Check if the file was modified */
-        if ((fst->st.st_mtime != st.st_mtime) ||
-            (fst->st.st_size != st.st_size)) {
+        if (fst->st.st_size != st.st_size) {
             /* Update stat info and trigger the notification */
             memcpy(&fst->st, &st, sizeof(struct stat));
             fst->checked = t;
@@ -162,10 +161,6 @@ static int tail_fs_check(struct flb_input_instance *ins,
          * Check if file still exists. This method requires explicity that the
          * user is using an absolute path, otherwise we will be rotating the
          * wrong file.
-         *
-         * flb_tail_target_file_name_cmp is a deeper compare than
-         * flb_tail_file_name_cmp. If applicable, it compares to the underlying
-         * real_name of the file.
          */
         if (flb_tail_file_is_rotated(ctx, file) == FLB_TRUE) {
             flb_tail_file_rotated(file);
@@ -226,7 +221,7 @@ int flb_tail_fs_add(struct flb_tail_file *file)
     }
 
     fst->checked = time(NULL);
-    ret = stat(file->name, &fst->st);
+    ret = fstat(file->fd, &fst->st);
     if (ret == -1) {
         flb_errno();
         flb_free(fst);

@@ -56,6 +56,13 @@ struct flb_sqldb *flb_tail_db_open(const char *path,
         return NULL;
     }
 
+    ret = flb_sqldb_query(db, SQL_CREATE_FILES_INDEX, NULL, NULL);
+    if (ret != FLB_OK) {
+        flb_plg_error(ctx->ins, "db: could not create 'in_tail_files_inode_idx' index");
+        flb_sqldb_close(db);
+        return NULL;
+    }
+
     if (ctx->db_sync >= 0) {
         snprintf(tmp, sizeof(tmp) - 1, SQL_PRAGMA_SYNC,
                  ctx->db_sync);
@@ -105,6 +112,7 @@ static int db_file_exists(struct flb_tail_file *file,
 
     /* Bind parameters */
     sqlite3_bind_int64(ctx->stmt_get_file, 1, file->inode);
+    sqlite3_bind_text(ctx->stmt_get_file, 2, file->filesystem, -1, 0);
     ret = sqlite3_step(ctx->stmt_get_file);
 
     if (ret == SQLITE_ROW) {
@@ -146,7 +154,8 @@ static int db_file_insert(struct flb_tail_file *file, struct flb_tail_config *ct
     sqlite3_bind_text(ctx->stmt_insert_file, 1, file->name, -1, 0);
     sqlite3_bind_int64(ctx->stmt_insert_file, 2, file->offset);
     sqlite3_bind_int64(ctx->stmt_insert_file, 3, file->inode);
-    sqlite3_bind_int64(ctx->stmt_insert_file, 4, created);
+    sqlite3_bind_text(ctx->stmt_insert_file, 4, file->filesystem, -1, 0);
+    sqlite3_bind_int64(ctx->stmt_insert_file, 5, created);
 
     /* Run the insert */
     ret = sqlite3_step(ctx->stmt_insert_file);
@@ -223,29 +232,6 @@ int flb_tail_db_file_offset(struct flb_tail_file *file,
 
     sqlite3_clear_bindings(ctx->stmt_offset);
     sqlite3_reset(ctx->stmt_offset);
-
-    return 0;
-}
-
-/* Mark a file as rotated v2 */
-int flb_tail_db_file_rotate(const char *new_name,
-                            struct flb_tail_file *file,
-                            struct flb_tail_config *ctx)
-{
-    int ret;
-
-    /* Bind parameters */
-    sqlite3_bind_text(ctx->stmt_rotate_file, 1, new_name, -1, 0);
-    sqlite3_bind_int64(ctx->stmt_rotate_file, 2, file->db_id);
-
-    ret = sqlite3_step(ctx->stmt_rotate_file);
-
-    sqlite3_clear_bindings(ctx->stmt_rotate_file);
-    sqlite3_reset(ctx->stmt_rotate_file);
-
-    if (ret != SQLITE_DONE) {
-        return -1;
-    }
 
     return 0;
 }

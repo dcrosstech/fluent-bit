@@ -20,6 +20,7 @@
 
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <sys/mount.h>
 #include <fcntl.h>
 #include <time.h>
 
@@ -523,7 +524,7 @@ static inline int flb_tail_file_exists(struct stat *st,
     /* Iterate static list */
     mk_list_foreach(head, &ctx->files_static) {
         file = mk_list_entry(head, struct flb_tail_file, _head);
-        if (file->inode == st->st_ino) {
+        if ((file->inode == st->st_ino) && (file->dev == st->st_dev)) {
             return FLB_TRUE;
         }
     }
@@ -531,7 +532,7 @@ static inline int flb_tail_file_exists(struct stat *st,
     /* Iterate dynamic list */
     mk_list_foreach(head, &ctx->files_event) {
         file = mk_list_entry(head, struct flb_tail_file, _head);
-        if (file->inode == st->st_ino) {
+        if ((file->inode == st->st_ino) && (file->dev == st->dev)) {
             return FLB_TRUE;
         }
     }
@@ -593,7 +594,7 @@ static int set_file_position(struct flb_tail_config *ctx,
     return 0;
 }
 
-int flb_tail_file_append(char *path, struct stat *st, int mode,
+int flb_tail_file_append(char *path,  int mode,
                          struct flb_tail_config *ctx)
 {
     int fd;
@@ -601,21 +602,33 @@ int flb_tail_file_append(char *path, struct stat *st, int mode,
     size_t len;
     char *tag;
     size_t tag_len;
+    struct stat st;
+    struct statfs stfs;
     struct flb_tail_file *file;
-    struct stat lst;
 
-    if (!S_ISREG(st->st_mode)) {
-        return -1;
-    }
-
-    if (flb_tail_file_exists(st, ctx) == FLB_TRUE) {
-        return -1;
-    }
-
-    fd = open(path, O_RDONLY);
+    fd = open(path, O_RDONLY, 0);
     if (fd == -1) {
         flb_errno();
         flb_plg_error(ctx->ins, "cannot open %s", path);
+        return -1;
+    }
+    ret = fstat(fd, &st);
+    if (ret == -1) {
+        flb_errno();
+        flb_plg_error(ctx->ins, "cannot stat %s", path);
+        return -1;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        return -1;
+    }
+
+    if (flb_tail_file_exists(&st, ctx) == FLB_TRUE) {
+        return -1;
+    }
+
+    if (fstatfs(fd, &stfs) == -1) {
+        flb_errno();
+        flb_plg_error(ctx->ins, "cannot statfs %s", path);
         return -1;
     }
 
@@ -629,35 +642,12 @@ int flb_tail_file_append(char *path, struct stat *st, int mode,
     file->watch_fd  = -1;
     file->fd        = fd;
 
-    /* On non-windows environments check if the original path is a link */
-    ret = lstat(path, &lst);
-    if (ret == 0) {
-        if (S_ISLNK(lst.st_mode)) {
-            file->is_link = FLB_TRUE;
-            file->link_inode = lst.st_ino;
-        }
-    }
-
-    /*
-     * Duplicate string into 'file' structure, the called function
-     * take cares to resolve real-name of the file in case we are
-     * running in a non-Linux system.
-     *
-     * Depending of the operating system, the way to obtain the file
-     * name associated to it file descriptor can have different behaviors
-     * specifically if it root path it's under a symbolic link. On Linux
-     * we can trust the file name but in others it's better to solve it
-     * with some extra calls.
-     */
-    ret = flb_tail_file_name_dup(path, file);
-    if (!file->name) {
-        flb_errno();
-        goto error;
-    }
-
-    file->inode     = st->st_ino;
+    file->name      = flb_strdup(path);
+    file->filesystem = flb_strdup(stfs.f_mntonname);
+    file->inode     = st.st_ino;
+    file->dev       = st.st_dev;
     file->offset    = 0;
-    file->size      = st->st_size;
+    file->size      = st.st_size;
     file->buf_len   = 0;
     file->parsed    = 0;
     file->config    = ctx;
@@ -766,9 +756,11 @@ error:
         if (file->name) {
             flb_free(file->name);
         }
+        if (file->filesystem) {
+            flb_free(file->filesystem);
+        }
         flb_free(file);
     }
-    close(fd);
 
     return -1;
 }
@@ -808,8 +800,12 @@ void flb_tail_file_remove(struct flb_tail_file *file)
     }
 
     flb_free(file->buf_data);
-    flb_free(file->name);
-    flb_free(file->real_name);
+    if (file->name) {
+        flb_free(file->name);
+    }
+    if (file->filesystem) {
+        flb_free(file->filesystem);
+    }
 
 #ifdef FLB_HAVE_METRICS
     flb_metrics_sum(FLB_TAIL_METRIC_F_CLOSED, 1, ctx->ins->metrics);
@@ -1016,7 +1012,6 @@ int flb_tail_file_is_rotated(struct flb_tail_config *ctx,
                              struct flb_tail_file *file)
 {
     int ret;
-    char *name;
     struct stat st;
 
     /*
@@ -1027,61 +1022,26 @@ int flb_tail_file_is_rotated(struct flb_tail_config *ctx,
         return FLB_FALSE;
     }
 
-    /* Check if the 'original monitored file' is a link and rotated */
-    if (file->is_link == FLB_TRUE) {
-        ret = lstat(file->name, &st);
-        if (ret == -1) {
-            /* Broken link or missing file */
-            if (errno == ENOENT) {
-                flb_plg_info(ctx->ins, "inode=%"PRIu64" link_rotated: %s",
-                             file->link_inode, file->name);
-                return FLB_TRUE;
-            }
-            else {
-                flb_errno();
-                flb_plg_error(ctx->ins,
-                              "link_inode=%"PRIu64" cannot detect if file: %s",
-                              file->link_inode, file->name);
-                return -1;
-            }
-        }
-        else {
-            /* The file name is there, check if the same that we have */
-            if (st.st_ino != file->link_inode) {
-                return FLB_TRUE;
-            }
-        }
-    }
-
-    /* Retrieve the real file name, operating system lookup */
-    name = flb_tail_file_name(file);
-    if (!name) {
-        flb_plg_error(ctx->ins,
-                      "inode=%"PRIu64" cannot detect if file was rotated: %s",
-                      file->inode, file->name);
-        return -1;
-    }
-
-
     /* Get stats from the file name */
-    ret = stat(name, &st);
+    ret = stat(file->name, &st);
     if (ret == -1) {
+        if (errno == ENOENT) {
+            flb_plg_info(ctx->ins, "inode=%"PRIu64" removed: %s",
+                         file->link_inode, file->name);
+                return FLB_TRUE;
+        }
         flb_errno();
-        flb_free(name);
         return -1;
     }
 
-    /* Compare inodes and names */
-    if (file->inode == st.st_ino &&
-        flb_tail_target_file_name_cmp(name, file) == 0) {
-        flb_free(name);
+    /* Compare inodes and devs */
+    if ((file->inode == st.st_ino) && (file->dev == st.st_dev)) {
         return FLB_FALSE;
     }
 
-    flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated: %s => %s",
-                  file->inode, file->name, name);
+    flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated: %s",
+                  file->inode, file->name);
 
-    flb_free(name);
     return FLB_TRUE;
 }
 
@@ -1127,142 +1087,31 @@ int flb_tail_file_to_event(struct flb_tail_file *file)
     return 0;
 }
 
-/*
- * Given an open file descriptor, return the filename. This function is a
- * bit slow and it aims to be used only when a file is rotated.
- */
-char *flb_tail_file_name(struct flb_tail_file *file)
-{
-    int ret;
-    char *buf;
-#ifdef __linux__
-    ssize_t s;
-    char tmp[128];
-#elif defined(__APPLE__)
-    char path[PATH_MAX];
-#elif defined(FLB_SYSTEM_WINDOWS)
-    HANDLE h;
-#endif
-
-    buf = flb_malloc(PATH_MAX);
-    if (!buf) {
-        flb_errno();
-        return NULL;
-    }
-
-#ifdef __linux__
-    ret = snprintf(tmp, sizeof(tmp) - 1, "/proc/%i/fd/%i", getpid(), file->fd);
-    if (ret == -1) {
-        flb_errno();
-        flb_free(buf);
-        return NULL;
-    }
-
-    s = readlink(tmp, buf, PATH_MAX);
-    if (s == -1) {
-        flb_free(buf);
-        flb_errno();
-        return NULL;
-    }
-    buf[s] = '\0';
-
-#elif __APPLE__
-    int len;
-
-    ret = fcntl(file->fd, F_GETPATH, path);
-    if (ret == -1) {
-        flb_errno();
-        flb_free(buf);
-        return NULL;
-    }
-
-    len = strlen(path);
-    memcpy(buf, path, len);
-    buf[len] = '\0';
-
-#elif defined(FLB_SYSTEM_WINDOWS)
-    int len;
-
-    h = (HANDLE) _get_osfhandle(file->fd);
-    if (h == INVALID_HANDLE_VALUE) {
-        flb_errno();
-        flb_free(buf);
-        return NULL;
-    }
-
-    /* This function returns the length of the string excluding "\0"
-     * and the resulting path has a "\\?\" prefix.
-     */
-    len = GetFinalPathNameByHandleA(h, buf, PATH_MAX, FILE_NAME_NORMALIZED);
-    if (len == 0 || len >= PATH_MAX) {
-        flb_free(buf);
-        return NULL;
-    }
-
-    if (strstr(buf, "\\\\?\\")) {
-        memmove(buf, buf + 4, len + 1);
-    }
-#endif
-    return buf;
-}
-
-int flb_tail_file_name_dup(char *path, struct flb_tail_file *file)
-{
-    file->name = flb_strdup(path);
-    if (!file->name) {
-        flb_errno();
-        return -1;
-    }
-    file->name_len = strlen(file->name);
-
-    if (file->real_name) {
-        flb_free(file->real_name);
-    }
-    file->real_name = flb_tail_file_name(file);
-    if (!file->real_name) {
-        flb_errno();
-        flb_free(file->name);
-        file->name = NULL;
-        return -1;
-    }
-
-    return 0;
-}
-
 /* Invoked every time a file was rotated */
 int flb_tail_file_rotated(struct flb_tail_file *file)
 {
     int ret;
-    char *name;
-    char *tmp;
+    int fd;
     struct stat st;
     struct flb_tail_config *ctx = file->config;
 
-    /* Get the new file name */
-    name = flb_tail_file_name(file);
-    if (!name) {
-        return -1;
-    }
-
-    flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated %s -> %s",
-                  file->inode, file->name, name);
+    flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated %s",
+                  file->inode, file->orig_name);
 
     /* Update local file entry */
-    tmp = file->name;
-    flb_tail_file_name_dup(name, file);
-    flb_plg_info(ctx->ins, "inode=%"PRIu64" handle rotation(): %s => %s",
-                 file->inode, tmp, file->name);
+    flb_plg_info(ctx->ins, "inode=%"PRIu64" handle rotation(): %s",
+                 file->inode, file->name);
     if (file->rotated == 0) {
         file->rotated = time(NULL);
         mk_list_add(&file->_rotate_head, &file->config->files_rotated);
 
-    /* Rotate the file in the database */
+    /* delete the file in the database */
 #ifdef FLB_HAVE_SQLDB
         if (file->config->db) {
-            ret = flb_tail_db_file_rotate(name, file, file->config);
+            ret = flb_tail_db_file_delete(file, file->config);
             if (ret == -1) {
-                flb_plg_error(ctx->ins, "could not rotate file %s->%s in database",
-                              file->name, name);
+                flb_plg_error(ctx->ins, "could not delete file %s in database",
+                              file->name);
             }
         }
 #endif
@@ -1273,21 +1122,13 @@ int flb_tail_file_rotated(struct flb_tail_file *file)
 #endif
 
         /* Check if a new file has been created */
-        ret = stat(tmp, &st);
-        if (ret == 0 && st.st_ino != file->inode) {
-            if (flb_tail_file_exists(&st, ctx) == FLB_FALSE) {
-                ret = flb_tail_file_append(tmp, &st, FLB_TAIL_STATIC, ctx);
-                if (ret == -1) {
-                    flb_tail_scan(ctx->path_list, ctx);
-                }
-                else {
-                    tail_signal_manager(file->config);
-                }
-            }
+        ret = flb_tail_file_append(tmp, FLB_TAIL_STATIC, ctx);
+        if (ret == -1) {
+            flb_tail_scan(ctx->path_list, ctx);
+        } else {
+            tail_signal_manager(file->config);
         }
     }
-    flb_free(tmp);
-    flb_free(name);
 
     return 0;
 }
