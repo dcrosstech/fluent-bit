@@ -42,7 +42,7 @@
 
 int flb_tail_file_to_event(struct flb_tail_file *file);
 int flb_tail_file_chunk(struct flb_tail_file *file);
-int flb_tail_file_append(char *path, struct stat *st, int mode,
+int flb_tail_file_append(char *path, int mode,
                          struct flb_tail_config *ctx);
 void flb_tail_file_remove(struct flb_tail_file *file);
 int flb_tail_file_remove_all(struct flb_tail_config *ctx);

@@ -532,7 +532,7 @@ static inline int flb_tail_file_exists(struct stat *st,
     /* Iterate dynamic list */
     mk_list_foreach(head, &ctx->files_event) {
         file = mk_list_entry(head, struct flb_tail_file, _head);
-        if ((file->inode == st->st_ino) && (file->dev == st->dev)) {
+        if ((file->inode == st->st_ino) && (file->dev == st->st_dev)) {
             return FLB_TRUE;
         }
     }
@@ -1027,7 +1027,7 @@ int flb_tail_file_is_rotated(struct flb_tail_config *ctx,
     if (ret == -1) {
         if (errno == ENOENT) {
             flb_plg_info(ctx->ins, "inode=%"PRIu64" removed: %s",
-                         file->link_inode, file->name);
+                         file->inode, file->name);
                 return FLB_TRUE;
         }
         flb_errno();
@@ -1096,7 +1096,7 @@ int flb_tail_file_rotated(struct flb_tail_file *file)
     struct flb_tail_config *ctx = file->config;
 
     flb_plg_debug(ctx->ins, "inode=%"PRIu64" rotated %s",
-                  file->inode, file->orig_name);
+                  file->inode, file->name);
 
     /* Update local file entry */
     flb_plg_info(ctx->ins, "inode=%"PRIu64" handle rotation(): %s",
@@ -1122,7 +1122,7 @@ int flb_tail_file_rotated(struct flb_tail_file *file)
 #endif
 
         /* Check if a new file has been created */
-        ret = flb_tail_file_append(tmp, FLB_TAIL_STATIC, ctx);
+        ret = flb_tail_file_append(file->name, FLB_TAIL_STATIC, ctx);
         if (ret == -1) {
             flb_tail_scan(ctx->path_list, ctx);
         } else {
